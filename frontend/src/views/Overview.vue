@@ -3,6 +3,9 @@
     <div class="dashboard-header">
       <h1>2025年收入追踪系统</h1>
       <div class="header-actions">
+        <el-button type="primary" @click="showGoalDialog">
+          <el-icon><Trophy /></el-icon>设置目标
+        </el-button>
         <el-button type="primary" @click="openAddDialog">
           <el-icon><Plus /></el-icon>记录收入
         </el-button>
@@ -48,13 +51,60 @@
           <div class="stat-label">日均收入</div>
         </div>
       </div>
-      <div class="stat-card prediction">
+      <div class="stat-card goal" @click="showGoalDialog">
         <div class="stat-icon">
-          <el-icon><TrendCharts /></el-icon>
+          <el-icon><Trophy /></el-icon>
         </div>
         <div class="stat-content">
-          <div class="stat-value">¥{{ yearPrediction.toLocaleString() }}</div>
-          <div class="stat-label">年度预测</div>
+          <template v-if="currentGoal">
+            <div class="goal-info">
+              <div class="goal-amount">¥{{ currentGoal.goal.amount.toLocaleString() }}</div>
+              <div class="goal-type">{{ currentGoal.goal.period === 'monthly' ? '月度目标' : '年度目标' }}</div>
+            </div>
+            
+            <div class="goal-rings">
+              <!-- 月度目标圆环 -->
+              <div class="goal-ring-item" v-if="currentGoal.period_stats?.monthly">
+                <el-progress
+                  type="dashboard"
+                  :percentage="currentGoal.period_stats.monthly.completion_rate"
+                  :color="getProgressColor(currentGoal.period_stats.monthly.completion_rate)"
+                  :stroke-width="10"
+                >
+                  <template #default="{ percentage }">
+                    <div class="goal-ring-content">
+                      <span class="goal-ring-label">月度</span>
+                      <span class="goal-ring-value">{{ percentage.toFixed(1) }}%</span>
+                      <span class="goal-ring-amount">¥{{ currentGoal.period_stats.monthly.current_amount.toLocaleString() }}</span>
+                    </div>
+                  </template>
+                </el-progress>
+              </div>
+              
+              <!-- 年度目标圆环 -->
+              <div class="goal-ring-item" v-if="currentGoal.period_stats?.yearly">
+                <el-progress
+                  type="dashboard"
+                  :percentage="currentGoal.period_stats.yearly.completion_rate"
+                  :color="getProgressColor(currentGoal.period_stats.yearly.completion_rate)"
+                  :stroke-width="10"
+                >
+                  <template #default="{ percentage }">
+                    <div class="goal-ring-content">
+                      <span class="goal-ring-label">年度</span>
+                      <span class="goal-ring-value">{{ percentage.toFixed(1) }}%</span>
+                      <span class="goal-ring-amount">¥{{ currentGoal.period_stats.yearly.current_amount.toLocaleString() }}</span>
+                    </div>
+                  </template>
+                </el-progress>
+              </div>
+            </div>
+          </template>
+          
+          <div v-else class="no-goal">
+            <el-icon><Plus /></el-icon>
+            <span>设置收入目标</span>
+          </div>
         </div>
       </div>
     </div>
@@ -192,6 +242,68 @@
         </span>
       </template>
     </el-dialog>
+
+    <!-- 目标设置对话框 -->
+    <el-dialog
+      v-model="goalDialogVisible"
+      :title="currentGoal ? '更新收入目标' : '设置收入目标'"
+      width="500px"
+    >
+      <el-form
+        ref="goalFormRef"
+        :model="goalForm"
+        :rules="goalRules"
+        label-width="100px"
+      >
+        <el-form-item label="目标类型" prop="period">
+          <el-select v-model="goalForm.period" style="width: 100%">
+            <el-option label="月度目标" value="monthly" />
+            <el-option label="年度目标" value="yearly" />
+          </el-select>
+        </el-form-item>
+        
+        <el-form-item label="目标金额" prop="amount">
+          <el-input-number 
+            v-model="goalForm.amount"
+            :min="0"
+            :step="1000"
+            style="width: 100%"
+          />
+        </el-form-item>
+        
+        <el-form-item label="起止时间" prop="dateRange">
+          <el-date-picker
+            v-model="goalForm.dateRange"
+            type="daterange"
+            range-separator="至"
+            start-placeholder="开始日期"
+            end-placeholder="结束日期"
+            style="width: 100%"
+          />
+        </el-form-item>
+        
+        <el-form-item label="描述" prop="description">
+          <el-input
+            v-model="goalForm.description"
+            type="textarea"
+            :rows="3"
+            placeholder="请输入目标描述"
+          />
+        </el-form-item>
+      </el-form>
+      
+      <template #footer>
+        <span class="dialog-footer">
+          <el-button @click="goalDialogVisible = false">取消</el-button>
+          <el-button type="primary" @click="submitGoal">确定</el-button>
+          <el-button 
+            v-if="currentGoal"
+            type="danger" 
+            @click="deleteCurrentGoal"
+          >删除目标</el-button>
+        </span>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -202,7 +314,7 @@ import * as echarts from 'echarts'
 import dayjs from 'dayjs'
 import {
   Money, Calendar, Timer, TrendCharts,
-  Plus, Edit, Delete, ArrowUp, ArrowDown
+  Plus, Edit, Delete, ArrowUp, ArrowDown, Trophy
 } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
@@ -214,6 +326,8 @@ const isEdit = ref(false)
 const formRef = ref(null)
 const trendChartRef = ref(null)
 const distributionChartRef = ref(null)
+const goalDialogVisible = ref(false)
+const goalFormRef = ref(null)
 
 let trendChart = null
 let distributionChart = null
@@ -299,6 +413,37 @@ const typeRanking = computed(() => {
     .sort((a, b) => b.amount - a.amount)
 })
 
+const currentGoal = computed(() => store.currentGoal)
+const goalProgressColor = computed(() => {
+  if (!currentGoal.value) return '#409EFF'
+  
+  let rate = 0
+  if (currentGoal.value.goal.period === 'monthly' && currentGoal.value.period_stats?.monthly) {
+    rate = currentGoal.value.period_stats.monthly.completion_rate
+  } else if (currentGoal.value.goal.period === 'yearly' && currentGoal.value.period_stats?.yearly) {
+    rate = currentGoal.value.period_stats.yearly.completion_rate
+  }
+  
+  if (rate >= 100) return '#67C23A'
+  if (rate >= 80) return '#E6A23C'
+  return '#409EFF'
+})
+
+// 添加 goalForm 的定义
+const goalForm = ref({
+  period: 'monthly',
+  amount: 0,
+  dateRange: null,
+  description: ''
+})
+
+// 添加 goalRules 的定义
+const goalRules = {
+  period: [{ required: true, message: '请选择目标类型' }],
+  amount: [{ required: true, message: '请输入目标金额' }],
+  dateRange: [{ required: true, message: '请选择起止时间' }]
+}
+
 // 方法
 const getTagType = (type) => {
   const types = {
@@ -380,6 +525,89 @@ const submitForm = async () => {
 const showAllRecords = () => {
   // 可以实现查看所有记录的功能
   ElMessage.info('功能开发中')
+}
+
+const showGoalDialog = () => {
+  if (currentGoal.value) {
+    // 编辑现有目标
+    const goal = currentGoal.value.goal
+    goalForm.value = {
+      period: goal.period,
+      amount: goal.amount,
+      dateRange: [new Date(goal.start_date), new Date(goal.end_date)],
+      description: goal.description || ''
+    }
+  } else {
+    // 新建目标
+    const now = new Date()
+    const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0)
+    goalForm.value = {
+      period: 'monthly',
+      amount: 0,
+      dateRange: [now, endOfMonth],
+      description: ''
+    }
+  }
+  goalDialogVisible.value = true
+}
+
+const submitGoal = async () => {
+  if (!goalFormRef.value) return
+  
+  await goalFormRef.value.validate(async (valid) => {
+    if (valid) {
+      try {
+        // 确保日期范围存在
+        if (!goalForm.value.dateRange || !Array.isArray(goalForm.value.dateRange)) {
+          ElMessage.error('请选择有效的日期范围')
+          return
+        }
+
+        const [startDate, endDate] = goalForm.value.dateRange
+        if (!startDate || !endDate) {
+          ElMessage.error('请选择完整的日期范围')
+          return
+        }
+
+        const goalData = {
+          period: goalForm.value.period,
+          amount: goalForm.value.amount,
+          start_date: dayjs(startDate).format('YYYY-MM-DD'),
+          end_date: dayjs(endDate).format('YYYY-MM-DD'),
+          description: goalForm.value.description || ''
+        }
+        
+        if (currentGoal.value) {
+          await store.updateGoal(currentGoal.value.goal.id, goalData)
+          ElMessage.success('目标更新成功')
+        } else {
+          await store.addGoal(goalData)
+          ElMessage.success('目标设置成功')
+        }
+        
+        goalDialogVisible.value = false
+        await store.fetchGoals() // 重新获取目标数据
+      } catch (error) {
+        console.error('保存目标失败:', error)
+        ElMessage.error('保存失败：' + (error.message || '未知错误'))
+      }
+    }
+  })
+}
+
+const deleteCurrentGoal = async () => {
+  try {
+    await ElMessageBox.confirm('确定要删除这个目标吗？', '提示', {
+      type: 'warning'
+    })
+    await store.deleteGoal(currentGoal.value.goal.id)
+    ElMessage.success('目标已删除')
+    goalDialogVisible.value = false
+  } catch (error) {
+    if (error !== 'cancel') {
+      ElMessage.error('删除失败：' + error.message)
+    }
+  }
 }
 
 // 图表初始化
@@ -554,6 +782,7 @@ watch(trendTimeRange, () => {
 // 生命周期钩子
 onMounted(async () => {
   await store.fetchIncomes()
+  await store.fetchGoals()
   initCharts()
   
   window.addEventListener('resize', () => {
@@ -561,6 +790,12 @@ onMounted(async () => {
     distributionChart?.resize()
   })
 })
+
+const getProgressColor = (rate) => {
+  if (rate >= 100) return '#67C23A'
+  if (rate >= 80) return '#E6A23C'
+  return '#409EFF'
+}
 </script>
 
 <style scoped>
@@ -587,6 +822,7 @@ onMounted(async () => {
 .header-actions {
   display: flex;
   gap: 12px;
+  align-items: center;
 }
 
 .stat-cards {
@@ -792,5 +1028,146 @@ onMounted(async () => {
 
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.3);
+}
+
+.goal-card {
+  cursor: pointer;
+  transition: transform 0.2s;
+}
+
+.goal-card:hover {
+  transform: translateY(-2px);
+}
+
+.goal-info {
+  text-align: center;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.goal-amount {
+  font-size: 24px;
+  font-weight: bold;
+  color: var(--primary-color);
+  margin-bottom: 4px;
+}
+
+.goal-type {
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.goal-progress-container {
+  margin-top: 16px;
+}
+
+.goal-progress-section {
+  margin-bottom: 12px;
+  padding: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 8px;
+}
+
+.goal-progress-section:last-child {
+  margin-bottom: 0;
+}
+
+.goal-progress-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.goal-progress-label {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.goal-progress-value {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--primary-color);
+}
+
+.goal-progress {
+  margin: 8px 0;
+}
+
+.goal-current {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.7);
+  text-align: right;
+}
+
+.no-goal {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  color: #909399;
+  cursor: pointer;
+  padding: 20px 0;
+}
+
+.no-goal:hover {
+  color: #409EFF;
+}
+
+.no-goal .el-icon {
+  font-size: 24px;
+}
+
+.goal-rings {
+  display: flex;
+  justify-content: space-around;
+  align-items: center;
+  margin-top: 20px;
+  gap: 16px;
+}
+
+.goal-ring-item {
+  flex: 1;
+  display: flex;
+  justify-content: center;
+}
+
+.goal-ring-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  line-height: 1.2;
+}
+
+.goal-ring-label {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.7);
+  margin-bottom: 4px;
+}
+
+.goal-ring-value {
+  font-size: 20px;
+  font-weight: bold;
+  color: var(--primary-color);
+}
+
+.goal-ring-amount {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.7);
+  margin-top: 4px;
+}
+
+:deep(.el-progress__text) {
+  color: var(--primary-color) !important;
+}
+
+:deep(.el-progress-dashboard) {
+  min-width: 120px !important;
+  min-height: 120px !important;
+}
+
+:deep(.el-progress-dashboard .el-progress-dashboard__inner) {
+  min-width: 120px !important;
+  min-height: 120px !important;
 }
 </style> 

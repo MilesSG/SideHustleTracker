@@ -4,6 +4,8 @@ import api from '../api/config'
 export const useIncomeStore = defineStore('income', {
   state: () => ({
     incomes: [],
+    goals: [],
+    goalsProgress: [],
     loading: false,
     error: null
   }),
@@ -35,6 +37,19 @@ export const useIncomeStore = defineStore('income', {
         stats[month] += income.amount
       })
       return stats
+    },
+
+    currentGoal: (state) => {
+      if (!state.goals.length || !state.goalsProgress.length) return null
+      
+      const latestGoal = state.goalsProgress.reduce((latest, current) => {
+        if (!latest) return current
+        const latestDate = new Date(latest.goal.end_date)
+        const currentDate = new Date(current.goal.end_date)
+        return currentDate > latestDate ? current : latest
+      }, null)
+      
+      return latestGoal
     }
   },
   
@@ -97,6 +112,79 @@ export const useIncomeStore = defineStore('income', {
       } catch (error) {
         this.error = error.message
         console.error('Failed to delete income:', error)
+        throw error
+      } finally {
+        this.loading = false
+      }
+    },
+
+    // 目标相关的 actions
+    async fetchGoals() {
+      this.loading = true
+      try {
+        const [goals, progress] = await Promise.all([
+          api.get('/api/goals'),
+          api.get('/api/goals/progress')
+        ])
+        this.goals = goals
+        this.goalsProgress = progress
+        this.error = null
+      } catch (error) {
+        console.error('Failed to fetch goals:', error)
+        this.error = error.message || '获取目标失败'
+        throw error
+      } finally {
+        this.loading = false
+      }
+    },
+
+    async addGoal(goal) {
+      this.loading = true
+      try {
+        const data = await api.post('/api/goals', goal)
+        this.goals.push(data)
+        await this.fetchGoals() // 重新获取进度
+        this.error = null
+        return data
+      } catch (error) {
+        console.error('Failed to add goal:', error)
+        this.error = error.message || '添加目标失败'
+        throw error
+      } finally {
+        this.loading = false
+      }
+    },
+
+    async updateGoal(id, goal) {
+      this.loading = true
+      try {
+        const data = await api.put(`/api/goals/${id}`, goal)
+        const index = this.goals.findIndex(g => g.id === id)
+        if (index !== -1) {
+          this.goals[index] = data
+        }
+        await this.fetchGoals() // 重新获取进度
+        this.error = null
+        return data
+      } catch (error) {
+        console.error('Failed to update goal:', error)
+        this.error = error.message || '更新目标失败'
+        throw error
+      } finally {
+        this.loading = false
+      }
+    },
+
+    async deleteGoal(id) {
+      this.loading = true
+      try {
+        await api.delete(`/api/goals/${id}`)
+        this.goals = this.goals.filter(goal => goal.id !== id)
+        await this.fetchGoals() // 重新获取进度
+        this.error = null
+      } catch (error) {
+        console.error('Failed to delete goal:', error)
+        this.error = error.message || '删除目标失败'
         throw error
       } finally {
         this.loading = false
